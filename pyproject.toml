@@ -50,3 +50,7 @@ extend-select = ["UP"]
 ignore = [
     "F722"
 ]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
