@@ -70,7 +70,8 @@ class RoPE(nn.Module):
         self.theta       = theta 
         self.d_k         = d_k
         self.max_seq_len = max_seq_len
-        
+        self.device      = device
+        self.dtype       = dtype
         self.register_buffer(
             name   = "rope_transformation",
             tensor = self._construct_rope(),
@@ -78,8 +79,8 @@ class RoPE(nn.Module):
         )
     
     def _construct_rope(self):
-        position   = torch.arange(start = 0, end = self.max_seq_len, step = 1).unsqueeze(dim = 1)          # [max_seq_len, 1]
-        freqs      = 1 / self.theta ** ( torch.arange(start = 0, end = self.d_k, step = 2) / self.d_k)     # [1, d_k/2]
+        position   = torch.arange(start = 0, end = self.max_seq_len, step = 1, device=self.device,dtype=self.dtype).unsqueeze(dim = 1)          # [max_seq_len, 1]
+        freqs      = 1 / self.theta ** ( torch.arange(start = 0, end = self.d_k, step = 2, device=self.device,dtype=self.dtype) / self.d_k)     # [1, d_k/2]
         rope_theta = position * freqs                                                                      # [max_seq_len, d_k/2]
         return rope_theta
 
