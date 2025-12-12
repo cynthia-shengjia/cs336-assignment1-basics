@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 from torch import Tensor
-from jaxtyping import Float
-from einops import rearrange
+from jaxtyping import Float,Bool,Int
+from einops import rearrange, einsum
 
 class Linear(nn.Module):
     def __init__(self, in_features:int, out_features:int, device = None, dtype = None):
@@ -99,9 +99,78 @@ class RoPE(nn.Module):
         return torch.stack([feature1,feature2], dim = -1).flatten(start_dim=-2,end_dim=-1)
 
 
+def softmax(x: Float[Tensor, "... d_model"], dim: int):
+    x_reduced = x - torch.max(x, dim = dim, keepdim = True).values
+    x_exp     = torch.exp(x_reduced)
+    return x_exp / x_exp.sum(dim = dim, keepdim=True)
+        
 
+def scaled_dot_product_attention(
+    Q: Float[Tensor, "... seq_len d_k"],
+    K: Float[Tensor, "... seq_len d_k"],
+    V: Float[Tensor, "... seq_len d_v"],
+    mask: Bool[Tensor, "... seq_len seq_len"]
+) -> Float[Tensor, "... seq_len d_v"]:
+    d_k = Q.shape[-1]
+    pre_softmax         = torch.matmul(Q,K.transpose(-1,-2)) / (d_k ** 0.5) 
+    masked_pre_softmax  = torch.masked_fill(input = pre_softmax, mask = ~mask, value = -torch.inf)
+    attn_score          = softmax(masked_pre_softmax, dim = -1)
+    output              = torch.matmul(attn_score,V)
+    return output
+
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self,d_model:int,num_heads:int,device = None, dtype = None):
+        super().__init__()
+        self.d_h = d_model // num_heads
+        self.q_proj = Linear(in_features=d_model,out_features=d_model, device=device,dtype=dtype)
+        self.k_proj = Linear(in_features=d_model,out_features=d_model, device=device,dtype=dtype)
+        self.v_proj = Linear(in_features=d_model,out_features=d_model, device=device,dtype=dtype)
+        self.output_proj = Linear(in_features=d_model,out_features=d_model, device=device,dtype=dtype)
+    def forward(self,x:Float[Tensor, "batch_size seq_len d_model"]):
         
+        Q,K,V   = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+        seq_len = Q.shape[-2] 
         
+        Q    = rearrange(Q, "b l (h d_h)-> b h l d_h", d_h = self.d_h)
+        K    = rearrange(K, "b l (h d_h)-> b h l d_h", d_h = self.d_h)
+        V    = rearrange(V, "b l (h d_h)-> b h l d_h", d_h = self.d_h)
+        mask = torch.tril(torch.ones(seq_len,seq_len).bool())
+
+        O = scaled_dot_product_attention(
+            Q,K,V,mask
+        )
+
+        O   = rearrange(O, "b h l d_h -> b l (h d_h)")
+        return self.output_proj(O)
+
+
+
+class MultiHeadSelfAttentionWithRoPE(nn.Module):
+    def __init__(self,d_model:int,num_heads:int, max_seq_len:int, theta: float, device = None, dtype = None):
+        super().__init__()
+        self.d_h = d_model // num_heads
+        self.q_proj = Linear(in_features=d_model,out_features=d_model, device=device,dtype=dtype)
+        self.k_proj = Linear(in_features=d_model,out_features=d_model, device=device,dtype=dtype)
+        self.v_proj = Linear(in_features=d_model,out_features=d_model, device=device,dtype=dtype)
+        self.output_proj = Linear(in_features=d_model,out_features=d_model, device=device,dtype=dtype)
+        self.rope   = RoPE(theta = theta,d_k = self.d_h,max_seq_len=max_seq_len,device=device,dtype=dtype)
+    def forward(self,x:Float[Tensor, "batch_size seq_len d_model"], token_positions):
         
-        
-        
+        Q,K,V   = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+        seq_len = Q.shape[-2] 
+
+        Q    = rearrange(Q, "b l (h d_h)-> b h l d_h", d_h = self.d_h)
+        K    = rearrange(K, "b l (h d_h)-> b h l d_h", d_h = self.d_h)
+        V    = rearrange(V, "b l (h d_h)-> b h l d_h", d_h = self.d_h)
+
+        mask = torch.tril(torch.ones(seq_len,seq_len).bool())
+
+        O = scaled_dot_product_attention(
+            self.rope(Q,token_positions=token_positions),self.rope(K,token_positions=token_positions),V,mask
+        )
+
+        O   = rearrange(O, "b h l d_h -> b l (h d_h)")
+        return self.output_proj(O)
+
+    
