@@ -174,4 +174,156 @@ class MultiHeadSelfAttentionWithRoPE(nn.Module):
         O   = rearrange(O, "b h l d_h -> b l (h d_h)")
         return self.output_proj(O)
 
+class TransformerBlock(nn.Module):
+    def __init__(
+        self, 
+        d_model:int, 
+        num_heads:int, 
+        d_ff:int, 
+        max_seq_len:int,
+        theta:float,
+        device = None, 
+        dtype = None
+    ):
+        super().__init__()
+        self.ln1  = RMSNorm(
+            d_model=d_model,
+            device=device,
+            dtype=dtype
+        )
+        self.attn = MultiHeadSelfAttentionWithRoPE(
+            d_model=d_model,
+            num_heads=num_heads,
+            max_seq_len=max_seq_len,
+            theta=theta,
+            device=device,
+            dtype=dtype
+        )
+        self.ln2 = RMSNorm(
+            d_model=d_model,
+            device=device,
+            dtype=dtype
+        )
+        self.ffn = PositionwiseFeedforward(
+            d_model = d_model,
+            d_ff = d_ff,
+            device = device,
+            dtype=dtype
+        )
+    def forward(self, x: Float[Tensor, "batch_size seq_len d_model"], token_positions: Int[Tensor, "seq_len"]):  
+        # Attention block
+        x = x + self.attn(x = self.ln1(x), token_positions=token_positions)
+        
+        # FFN block
+        x = x + self.ffn(x = self.ln2(x))
+        
+        return x
+    def load_weights(self, weights: dict[str, Tensor]):
+        """
+        Load weights from a state dict into the TransformerBlock.
+        
+        Args:
+            weights: State dict containing the weights for all components
+        """
+        # Load attention weights
+        self.attn.q_proj.weight.data = weights['attn.q_proj.weight']
+        self.attn.k_proj.weight.data = weights['attn.k_proj.weight']
+        self.attn.v_proj.weight.data = weights['attn.v_proj.weight']
+        self.attn.output_proj.weight.data = weights['attn.output_proj.weight']
+        
+        # Load first RMSNorm weights
+        self.ln1.weight.data = weights['ln1.weight']
+        
+        # Load FFN weights
+        self.ffn.w1.weight.data = weights['ffn.w1.weight']
+        self.ffn.w2.weight.data = weights['ffn.w2.weight']
+        self.ffn.w3.weight.data = weights['ffn.w3.weight']
+        
+        # Load second RMSNorm weights
+        self.ln2.weight.data = weights['ln2.weight']
     
+class TransformerLM(nn.Module):
+    def __init__(self,
+        vocab_size:int, 
+        num_layers:int,
+        d_model:int,
+        d_ff:int,
+        num_heads:int,
+        max_seq_len:int,
+        theta:float,
+        device = None,
+        dtype  = None,
+    ):
+        super().__init__()
+        self.num_layers = num_layers
+        self.token_embeddings = Embedding(
+            num_embeddings=vocab_size,
+            embedding_dim=d_model,
+            device=device,
+            dtype=dtype
+        )
+
+        self.transformer_blocks = nn.ModuleList(
+            TransformerBlock(
+                d_model = d_model,
+                num_heads=num_heads,
+                d_ff=d_ff,
+                max_seq_len=max_seq_len,
+                theta = theta,
+                device=device,
+                dtype=dtype    
+            ) for _ in range(num_layers)
+        )
+
+        self.ln_final = RMSNorm(
+            d_model = d_model,
+            device=device,
+            dtype=dtype           
+        )
+
+        self.lm_head = Linear(
+            in_features=d_model,
+            out_features=vocab_size,
+            device=device,
+            dtype=dtype
+        )
+
+    
+    def forward(self,index: Int[Tensor, "batch_size seq_len"],token_positions: Int[Tensor,"seq_len"]): 
+        word_embs = self.token_embeddings(index)       # [batch_size, seq_len, d_model]
+                
+        for layer in range(self.num_layers):
+            transformer_block = self.transformer_blocks[layer]
+            word_embs = transformer_block(x = word_embs, token_positions = token_positions)
+        
+        logits = self.lm_head(self.ln_final(word_embs))
+
+        return logits
+    
+    def load_weights(self, weights: dict):
+        # Load token embeddings
+        self.token_embeddings.weight.data = weights["token_embeddings.weight"]
+        
+        # Load weights for each transformer block
+        for layer in range(self.num_layers):
+            # Extract weights for this specific layer
+            layer_weights = {
+                'attn.q_proj.weight': weights[f'layers.{layer}.attn.q_proj.weight'],
+                'attn.k_proj.weight': weights[f'layers.{layer}.attn.k_proj.weight'],
+                'attn.v_proj.weight': weights[f'layers.{layer}.attn.v_proj.weight'],
+                'attn.output_proj.weight': weights[f'layers.{layer}.attn.output_proj.weight'],
+                'ln1.weight': weights[f'layers.{layer}.ln1.weight'],
+                'ffn.w1.weight': weights[f'layers.{layer}.ffn.w1.weight'],
+                'ffn.w2.weight': weights[f'layers.{layer}.ffn.w2.weight'],
+                'ffn.w3.weight': weights[f'layers.{layer}.ffn.w3.weight'],
+                'ln2.weight': weights[f'layers.{layer}.ln2.weight'],
+            }
+            
+            # Use the TransformerBlock's load_weights method
+            self.transformer_blocks[layer].load_weights(layer_weights)
+        
+        # Load final layer norm weights
+        self.ln_final.weight.data = weights["ln_final.weight"]
+        
+        # Load language model head weights
+        self.lm_head.weight.data = weights["lm_head.weight"]
