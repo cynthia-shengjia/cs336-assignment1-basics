@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch import Tensor
 from jaxtyping import Float,Bool,Int
 from einops import rearrange, einsum
+from .nn_utils import softmax
 
 class Linear(nn.Module):
     def __init__(self, in_features:int, out_features:int, device = None, dtype = None):
@@ -100,10 +101,7 @@ class RoPE(nn.Module):
         return torch.stack([feature1,feature2], dim = -1).flatten(start_dim=-2,end_dim=-1)
 
 
-def softmax(x: Float[Tensor, "... d_model"], dim: int):
-    x_reduced = x - torch.max(x, dim = dim, keepdim = True).values
-    x_exp     = torch.exp(x_reduced)
-    return x_exp / x_exp.sum(dim = dim, keepdim=True)
+
         
 
 def scaled_dot_product_attention(
@@ -291,7 +289,7 @@ class TransformerLM(nn.Module):
     
     def forward(self,index: Int[Tensor, "batch_size seq_len"],token_positions: Int[Tensor,"seq_len"]): 
         word_embs = self.token_embeddings(index)       # [batch_size, seq_len, d_model]
-                
+
         for layer in range(self.num_layers):
             transformer_block = self.transformer_blocks[layer]
             word_embs = transformer_block(x = word_embs, token_positions = token_positions)
