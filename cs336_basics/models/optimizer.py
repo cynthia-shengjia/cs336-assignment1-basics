@@ -3,6 +3,23 @@ from typing import Optional,Tuple
 import torch
 import math
 
+
+def get_cosine_lr(
+    step:   int,
+    lr_min: float,
+    lr_max: float,
+    warmup_steps: int,
+    cosine_steps: int
+):
+    if step < warmup_steps:
+        return (step / warmup_steps) * lr_max
+    elif step < cosine_steps:
+        freqs  = (step-warmup_steps) * math.pi / (cosine_steps-warmup_steps)
+        weight = math.cos(freqs) 
+        return (lr_max + lr_min) / 2 + (lr_max - lr_min) * weight / 2
+    else:
+        return lr_min
+
 class AdamW(torch.optim.Optimizer):
     def __init__(self,
         params: Iterable          = None,
